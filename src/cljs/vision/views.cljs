@@ -11,7 +11,8 @@
     (fn []
       (let [stats @stats-sub]
        [:div
-        [:img {:src (str "data:image/png;base64," @cf-sub)}]
+        (when-let [frame-data @cf-sub]
+          [:img {:src (str "data:image/png;base64," frame-data)}])
         [:ul {:style {:display :inline-block}}
          (when-let [o @object-sub] [:li (str "Object at:" (str o))])
          [:li [:span "Browser received frames count: "] [:span (or (-> stats :frames-received :count ) 0)]]

@@ -39,9 +39,10 @@
 
 (go-loop [msg nil]
   (when msg
-    (let [[_ [ev-key frame-w-obj]] (:event msg)]
+    (let [[_ [ev-key data]] (:event msg)]
       (case ev-key
-        :ev/new-frame (re-frame/dispatch [:new-frame-w-obj frame-w-obj])
+        :ev/new-frame (re-frame/dispatch [:new-frame-w-obj data])
+        :ev/new-stats (re-frame/dispatch [:new-stats data])
         nil)))
   (recur (<! ch-recv)))
 

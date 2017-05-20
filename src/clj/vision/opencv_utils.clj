@@ -62,3 +62,8 @@
   (let [tmp-img "/home/jmonetta/tmp/tmp-opencv.png"]
     (Highgui/imwrite tmp-img fm)
     (sh "feh" tmp-img)))
+
+(defn pyr-down [^Mat m]
+  (let [result-m (Mat.)]
+    (Imgproc/pyrDown m result-m)
+    result-m))

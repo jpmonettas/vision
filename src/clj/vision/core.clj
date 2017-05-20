@@ -29,6 +29,7 @@
 
 (defn process-frame [^Mat m]
   (let [processed-frame (-> m
+                            cv-utils/pyr-down
                             cv-utils/bgr->hsv
                             (cv-utils/in-range-s [10 120 100] [20 200 200])
                             cv-utils/erode
@@ -41,11 +42,7 @@
   {:frame (-> frame-matrix
               cv-utils/mat->byte-arr
               cv-utils/encode-frame-b64)
-   :obj biggest-object
-   :server-stats (-> @stats-agent
-                     (update :frames-grabbed dissoc :last)
-                     (update :frames-processed dissoc :last)
-                     (update :frames-sent-to-browser dissoc :last))})
+   :obj biggest-object})
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Channels and pipelines ;;
@@ -81,13 +78,23 @@
 (def frame-retrieve-thread-running (atom false))
 (.start (Thread. (fn []
                    (loop []
-                     (when @frame-retrieve-thread-running
+                     (when (and @frame-retrieve-thread-running
+                                (.isOpened vc))
                        (let [frame (Mat.)]
-                         (.read vc frame)
-                         (a/>!! frames-ch frame)
-                         (send stats-agent update-stats :frames-grabbed)
-                         (Thread/sleep 10)))
+                         (when (.read vc frame)
+                           (a/>!! frames-ch frame)
+                           (send stats-agent update-stats :frames-grabbed))))
+                     (Thread/sleep 10)
                      (recur)))))
+
+;; Send stats every .5 seconds
+(a/go-loop []
+  (a/<! (a/timeout 500))
+  (send-thru-ws :sente/all-users-without-uid [:ev/new-stats (-> @stats-agent
+                                                                (update :frames-grabbed dissoc :last)
+                                                                (update :frames-processed dissoc :last)
+                                                                (update :frames-sent-to-browser dissoc :last))])
+  (recur))
 
 
 ;;;;;;;;;;;;;;;;
@@ -145,6 +152,6 @@
                                                                 build-frame-for-ws)] )
 
 
-  (cv-utils/view-frame-matrix frame-mat)
+  (cv-utils/view-frame-matrix (cv-utils/pyr-down frame-mat))
 
   )

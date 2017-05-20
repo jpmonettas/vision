@@ -10,10 +10,15 @@
 
 (re-frame/reg-event-db
  :new-frame-w-obj
- (fn  [db [_ {:keys [frame obj server-stats]}]]
+ (fn  [db [_ {:keys [frame obj]}]]
    (-> db
        (assoc :current-frame frame)
        (assoc :obj obj)
-       (update :stats merge server-stats)
        (update :stats utils/update-stats :frames-received))))
+
+(re-frame/reg-event-db
+ :new-stats
+ (fn  [db [_ stats]]
+   (-> db 
+       (update :stats merge stats))))
 

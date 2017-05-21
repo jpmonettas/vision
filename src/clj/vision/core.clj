@@ -35,7 +35,7 @@
                             cv-utils/erode
                             cv-utils/dilate
                             add-biggest-object-box)]
-    (send stats-agent update-stats :frames-processed)
+    (send stats-agent update :frames-processed (fnil inc 0))
     processed-frame))
 
 (defn build-frame-for-ws [{:keys [frame-matrix biggest-object]}]
@@ -66,36 +66,62 @@
 ;;;;;;;;;;;;;;
 
 (def ws-pusher-thread-running (atom false))
-(.start (Thread. (fn []
-                   (loop [frame nil]
-                     (when @ws-pusher-thread-running
-                       (when frame
-                         (send-thru-ws :sente/all-users-without-uid [:ev/new-frame frame])
-                         (send stats-agent update-stats :frames-sent-to-browser)
-                         (Thread/sleep 100)))
-                     (recur (a/<!! ws-ch))))))
+(a/go-loop [frame nil]
+  (when @ws-pusher-thread-running
+    (when frame
+      (send-thru-ws :sente/all-users-without-uid [:ev/new-frame frame])
+      (send stats-agent update :frames-sent-to-browser (fnil inc 0))
+      (a/<! (a/timeout 100))))
+  (recur (a/<! ws-ch)))
 
 (def frame-retrieve-thread-running (atom false))
-(.start (Thread. (fn []
-                   (loop []
-                     (when (and @frame-retrieve-thread-running
-                                (.isOpened vc))
-                       (let [frame (Mat.)]
-                         (when (.read vc frame)
-                           (a/>!! frames-ch frame)
-                           (send stats-agent update-stats :frames-grabbed))))
-                     (Thread/sleep 10)
-                     (recur)))))
-
-;; Send stats every .5 seconds
 (a/go-loop []
-  (a/<! (a/timeout 500))
-  (send-thru-ws :sente/all-users-without-uid [:ev/new-stats (-> @stats-agent
-                                                                (update :frames-grabbed dissoc :last)
-                                                                (update :frames-processed dissoc :last)
-                                                                (update :frames-sent-to-browser dissoc :last))])
+  (when (and @frame-retrieve-thread-running
+             (.isOpened vc))
+    (let [frame (Mat.)]
+      (when (.read vc frame)
+        (a/>! frames-ch frame)
+        (send stats-agent update :frames-grabbed (fnil inc 0)))))
+  (a/<! (a/timeout 10))
   (recur))
 
+
+(defn calculate-stats [delta-millis last-counts current-counts]
+  (reduce
+   (fn [r [id counter]]
+     (-> r
+         (assoc id {:count counter
+                    :fps (let [delta-count (- counter (get last-counts id 0))]
+                           (if (zero? delta-count)
+                             0
+                             (float (/ 1000
+                                       (/ delta-millis delta-count)))))})))
+   {}
+   current-counts))
+
+;; Send stats every .5 seconds
+(a/go-loop [last-counts @stats-agent]
+  (let [check-every 500]
+    (a/<! (a/timeout check-every))
+    (let [current-counts @stats-agent]
+      (send-thru-ws :sente/all-users-without-uid
+                    [:ev/new-stats {:frames-stats (calculate-stats check-every last-counts current-counts)
+                                  :threads-status {:c1-grab-frames-thread @frame-retrieve-thread-running
+                                                   :c2-grab-frames-thread false
+                                                   :send-to-browser-thread @ws-pusher-thread-running}}])
+     (recur current-counts))))
+
+(defn dispatch-incomming-ws-message [[ev-id data]]
+  (case ev-id
+    :ev/toggle-thread (case data
+                        :c1-grab-frames-thread (swap! frame-retrieve-thread-running not)
+                        :send-to-browser-thread (swap! ws-pusher-thread-running not))
+    nil))
+
+;; incomming websocket messages read thread
+(a/go-loop []
+  (dispatch-incomming-ws-message (:event (a/<! (:ch-recv chsk))))
+    (recur))
 
 ;;;;;;;;;;;;;;;;
 ;; Web server ;;

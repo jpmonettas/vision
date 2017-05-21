@@ -18,7 +18,15 @@
 
 (re-frame/reg-event-db
  :new-stats
- (fn  [db [_ stats]]
+ (fn  [db [_ {:keys [frames-stats threads-status]}]]
    (-> db 
-       (update :stats merge stats))))
+       (update :stats merge frames-stats)
+       (assoc :threads-status threads-status))))
+
+(re-frame/reg-event-fx
+ :toggle-thread
+ [debug]
+ (fn  [cofx [_ t]]
+   {:ws-send [:ev/toggle-thread t]}))
+
 

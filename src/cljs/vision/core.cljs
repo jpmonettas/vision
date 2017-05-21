@@ -4,12 +4,9 @@
               [re-frisk.core :refer [enable-re-frisk!]]
               [vision.events]
               [vision.subs]
+              [vision.fxs]
               [vision.views :as views]
-              [vision.config :as config]
-              [cljs.core.async :as async :refer (<! >! put! chan)]
-              [taoensso.sente  :as sente :refer (cb-success?)])
-     (:require-macros
-      [cljs.core.async.macros :as asyncm :refer (go go-loop)]))
+              [vision.config :as config]))
 
 
 (defn dev-setup []
@@ -28,21 +25,4 @@
   (dev-setup)
   (mount-root))
 
-
-
-
-(let [{:keys [chsk ch-recv send-fn state]}
-      (sente/make-channel-socket! "ws://localhost:1234/chsk"
-                                  {:type :ws
-                                   :chsk-url-fn (constantly "ws://localhost:1234/chsk")})]
-  (def ch-recv ch-recv))
-
-(go-loop [msg nil]
-  (when msg
-    (let [[_ [ev-key data]] (:event msg)]
-      (case ev-key
-        :ev/new-frame (re-frame/dispatch [:new-frame-w-obj data])
-        :ev/new-stats (re-frame/dispatch [:new-stats data])
-        nil)))
-  (recur (<! ch-recv)))
 

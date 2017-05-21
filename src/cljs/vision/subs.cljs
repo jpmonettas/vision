@@ -16,3 +16,8 @@
  :obj
  (fn [db]
    (:obj db)))
+
+(re-frame/reg-sub
+ :threads-status
+ (fn [db [_ thread]]
+   (-> db :threads-status thread)))

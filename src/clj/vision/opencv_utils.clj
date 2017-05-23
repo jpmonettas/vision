@@ -5,10 +5,14 @@
            [org.opencv.imgproc Imgproc]
            [org.opencv.highgui Highgui]))
 
-(defn bgr->hsv [^Mat m]
+(defn convert-color [^Mat m c]
   (let [result-m (Mat.)]
-    (Imgproc/cvtColor m result-m Imgproc/COLOR_BGR2HSV)
+    (Imgproc/cvtColor m result-m (case c
+                                   :bgr->hsv Imgproc/COLOR_BGR2HSV
+                                   :bgr->gray Imgproc/COLOR_BGR2HSV
+                                   :bgr->rgb Imgproc/COLOR_BGR2RGB))
     result-m))
+
 
 (defn in-range-s [^Mat m [lch1 lch2 lch3] [hch1 hch2 hch3]]
   (let [result-m (Mat.)]
@@ -52,16 +56,19 @@
 (defn encode-frame-b64 [frame-bytes]
   (String. (base64/encode-bytes frame-bytes)))
 
-(defn mat->byte-arr [^Mat m]
+(defn mat->ext-byte-arr [^Mat m ext]
   (let [mob (MatOfByte.)]
-    (Highgui/imencode ".png" m mob)
+    (Highgui/imencode (case ext
+                        :png ".png"
+                        :jpeg ".jpg")
+                      m mob)
     (.toArray mob)))
 
 
 (defn view-frame-matrix [^Mat fm]
   (let [tmp-img "/home/jmonetta/tmp/tmp-opencv.png"]
     (Highgui/imwrite tmp-img fm)
-    (sh "feh" tmp-img)))
+    (future (sh "feh" tmp-img))))
 
 (defn pyr-down [^Mat m]
   (let [result-m (Mat.)]

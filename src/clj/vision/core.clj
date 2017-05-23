@@ -1,21 +1,25 @@
 (ns vision.core
   (:require [clojure.core.async :as a]
+            [org.httpkit.server
+             :as
+             http-server
+             :refer
+             [on-close send! with-channel]]
+            [ring.middleware
+             [keyword-params :refer [wrap-keyword-params]]
+             [params :refer [wrap-params]]]
             [taoensso.sente :as sente]
-            [org.httpkit.server :as http-server]
             [taoensso.sente.server-adapters.http-kit :refer [get-sch-adapter]]
-            [ring.middleware.params :refer [wrap-params]]
-            [ring.middleware.keyword-params :refer [wrap-keyword-params]]
-            [vision.utils :refer [update-stats]]
-            [clojure.string :as str]
             [vision.opencv-utils :as cv-utils])
-  (:import [org.opencv.core Point Rect Size MatOfByte Mat]
-           [org.opencv.highgui VideoCapture Highgui]))
+  (:import org.opencv.calib3d.StereoBM
+           org.opencv.core.Mat
+           [org.opencv.highgui Highgui VideoCapture]))
 
 (clojure.lang.RT/loadLibrary org.opencv.core.Core/NATIVE_LIBRARY_NAME)
 
-(def stats-agent (agent {}))
+(defonce stats-agent (agent {}))
 
-(def vc (VideoCapture. 0))
+(defonce vc (VideoCapture. 0))
 
 ;;;;;;;;;;;;;;;;;;;;;;;
 ;; Frames Processing ;;
@@ -30,7 +34,7 @@
 (defn process-frame [^Mat m]
   (let [processed-frame (-> m
                             cv-utils/pyr-down
-                            cv-utils/bgr->hsv
+                            (cv-utils/convert-color :bgr->hsv)
                             (cv-utils/in-range-s [10 120 100] [20 200 200])
                             cv-utils/erode
                             cv-utils/dilate
@@ -40,16 +44,27 @@
 
 (defn build-frame-for-ws [{:keys [frame-matrix biggest-object]}]
   {:frame (-> frame-matrix
-              cv-utils/mat->byte-arr
+              (cv-utils/mat->ext-byte-arr :png)
               cv-utils/encode-frame-b64)
    :obj biggest-object})
+
+(defn build-frame-for-stream [^Mat m]
+  (-> m
+      (cv-utils/mat->ext-byte-arr :jpeg)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Channels and pipelines ;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(def ws-ch (a/chan (a/sliding-buffer 1)))
-(def frames-ch (a/chan (a/sliding-buffer 1)))
+
+(def c1-frames-ch (a/chan (a/sliding-buffer 1)))
+(def full-video-streaming-ch (a/chan (a/sliding-buffer 1)))
+
+(a/pipeline 5
+            full-video-streaming-ch
+            (map build-frame-for-stream)
+            c1-frames-ch)
+
 (a/pipeline 5
             ws-ch
             (comp
@@ -129,6 +144,29 @@
 
 (def o *out*)
 
+
+(def streams-channels (atom #{}))
+
+(defn handle-full-video-streaming [req]
+  (with-channel req resp-ch
+    (on-close resp-ch (fn [status] (swap! streams-channels disj resp-ch)))
+    (send! resp-ch
+           {:status 200
+            :headers {"Content-type" "multipart/x-mixed-replace; boundary=--jpgboundary"}}
+           false)
+    (swap! streams-channels conj resp-ch)))
+
+(a/go-loop []
+  (when-let [frame-bytes (a/<! full-video-streaming-ch)]
+    (doseq [resp-ch @streams-channels]
+      (send! resp-ch (format "--jpgboundary\r\nContent-type: image/jpeg\r\nContent-length: %d\r\n"
+                             (count frame-bytes))
+             false)
+      (send! resp-ch "\r\n" false)
+      (send! resp-ch (clojure.java.io/input-stream frame-bytes) false))
+    (a/<! (a/timeout 50))
+    (recur)))
+
 (Thread/setDefaultUncaughtExceptionHandler
    (reify
      Thread$UncaughtExceptionHandler
@@ -136,12 +174,13 @@
        (binding [*out* o]
         (println  (format "Uncaught exception %s on thread %s" throwable thread))))))
 
-(defonce server (http-server/run-server
+(def server (http-server/run-server
                (-> (fn [req]
-                     (if (= (:uri req) "/chsk")
-                       (case (:request-method req)
-                         :get ((:ajax-get-or-ws-handshake-fn chsk) req)
-                         :post (:ajax-post-fn req))
+                     (case (:uri req)
+                       "/chsk" (case (:request-method req)
+                                 :get ((:ajax-get-or-ws-handshake-fn chsk) req)
+                                 :post (:ajax-post-fn req))
+                       "/full-video.mjpeg" (handle-full-video-streaming req)
                        {:status 404}))
                    wrap-keyword-params
                    wrap-params)
@@ -152,7 +191,38 @@
 ;; For the repl ;;
 ;;;;;;;;;;;;;;;;;;
 
+                        
+
 (comment
+
+  (def vc1 (VideoCapture.))
+  (.open vc1 "http://192.168.1.108:8080/video")
+  (.release vc1)
+  (def frame-mat-1 (Mat.))
+  
+  
+  (def vc2 (VideoCapture.))
+  (.open vc2 "http://192.168.1.100:8080/video")
+  (.release vc2)
+  (def frame-mat-2 (Mat.))
+
+  (do
+    (.read vc1 frame-mat-1)
+    (.read vc2 frame-mat-2))
+
+  (cv-utils/view-frame-matrix (cv-utils/convert-color frame-mat-1 :bgr->gray))
+  (cv-utils/view-frame-matrix (cv-utils/convert-color frame-mat-2 :bgr->gray))
+  (cv-utils/view-frame-matrix disp-m)
+
+  (Highgui/imwrite "/home/jmonetta/left.png" frame-mat-1)
+  (Highgui/imwrite "/home/jmonetta/right.png" frame-mat-2)
+
+  (def disp-m (Mat.))
+  (def sb (StereoBM. 0 16 15))
+  (.compute sb
+            (cv-utils/bgr->grey-scale frame-mat-1)
+            (cv-utils/bgr->grey-scale frame-mat-2)
+            disp-m)
   
   ;; Run threads
   (reset! frame-retrieve-thread-running true)
@@ -169,8 +239,9 @@
   (.release vc)
   (.open vc "http://192.168.1.107:8080/video")
   
-  (def frame-mat (Mat.))
-  (.read vc frame-mat)
+  (def frame-mat-1 (Mat.))
+  (.read vc frame-mat-1)
+  
   (send-thru-ws :sente/all-users-without-uid [:ev/new-frame (-> {:frame-matrix frame-mat}
                                                                 build-frame-for-ws)] )
   (send-thru-ws :sente/all-users-without-uid [:ev/new-frame (-> frame-mat
